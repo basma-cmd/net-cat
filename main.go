@@ -1,106 +1,119 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"log"
 	"net"
-	"sync"
 	"time"
 
-	"tcp-chat/logo"
+	//"os"
+	"strings"
+	//"sync"
 )
 
-// Structure pour chaque client
-type Client struct {
+var s = `Welcome to TCP-Chat!
+         _nnnn_
+        dGGGGMMb
+       @p~qp~~qMb
+       M|@||@) M|
+       @,----.JM|
+      JS^\__/  qKL
+     dZP        qKRb
+    dZP          qKKb
+   fZP            SMMb
+   HZM            MMMM
+   FqM            MMMM
+ __| ".        |\dS"qML`
+
+type Members struct {
+	Id   int
 	Name string
 	Conn net.Conn
 }
 
 var (
-    clients   []Client   // slice pour stocker les clients
-    clientsMu sync.Mutex // mutex pour protéger la slice
+	latestID int
+	// mu       sync.Mutex
+	members []Members
 )
 
 func main() {
-	// 1) Écouter sur le port 8989
-	ln, err := net.Listen("tcp", ":8989")
+	resp, err := net.Listen("tcp", ":8989")
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println("error:", err)
+		return
 	}
-	defer ln.Close() // fermer le server
-	fmt.Println("Serveur TCP en écoute sur le port 8989")
+	defer resp.Close()
 
-	// 2) Accepter les clients dans une boucle
+	fmt.Println("server listen in port 8989")
 	for {
-		conn, err := ln.Accept()
+		conn, err := resp.Accept()
 		if err != nil {
-			log.Println("Erreur accept:", err)
-			continue
+			fmt.Println("erro:", err)
 		}
-
-		go handleClient(conn) // gérer chaque client dans une goroutine
+		go handleConnection(conn)
 	}
 }
 
-func handleClient(conn net.Conn) {
-	defer conn.Close()
+func handleConnection(conn net.Conn) {
+    defer conn.Close()
+    fmt.Println("le client de ip:", conn.RemoteAddr(), ", a connecter")
 
-	_, _ = fmt.Fprint(conn, logo.Logo())
+    // envoi du logo + prompt
+    _, err := conn.Write([]byte(s + "\n" + "[Enter your name]: "))
+    if err != nil {
+        fmt.Println("error", err)
+        return
+    }
 
-	_, _ = fmt.Fprint(conn, "[ENTER YOUR NAME]: ")
-	reader := bufio.NewReader(conn) //stocke the name in tempo
-	name, _ := reader.ReadString('\n') // read it jusqu'a \n 
-	name = name[:len(name)-1] // retirer le \n
-	if name == "" {
-		name = "Anonymous"
-	}
+    // lecture du nom
+    buf := make([]byte, 1024)
+    n, err := conn.Read(buf)
+    if err != nil {
+        fmt.Println("error", err)
+        return
+    }
+    name := strings.TrimSpace(string(buf[:n]))
 
-	// Ajouter le client à la liste
-	clientsMu.Lock()
-	clients = append(clients, Client{Name: name, Conn: conn})
-	clientsMu.Unlock()
+    // création du membre
+    memberId := latestID
+    latestID++
+    newMember := Members{Id: memberId, Name: name, Conn: conn}
+    members = append(members, newMember)
 
-	fmt.Println(name, "vient de se connecter !")
+    // informer les autres
+    joinMsg := name + " has joined our chat...\n"
+    broadcast(joinMsg, memberId)
 
-	// Annoncer aux autres clients
-	broadcast(fmt.Sprintf("%s a rejoint le chat...\n", name), conn)
+    // boucle pour écouter les messages de ce client
+    for {
+        buff := make([]byte, 1024)
+        n, err := conn.Read(buff)
+        if err != nil {
+            fmt.Println("error:", err)
+            return
+        }
 
-	// Lire les messages
-	for {
-		msg, err := reader.ReadString('\n')
-		if err != nil {
-			break // le client s'est déconnecté
-		}
-		msg = msg[:len(msg)-1] // retirer le \n
-		if msg != "" {
-			timestamp := time.Now().Format("2006-01-02 15:04:05")
-			broadcast(fmt.Sprintf("[%s][%s]: %s\n", timestamp, name, msg), nil)
-		}
-	}
+        message := strings.TrimSpace(string(buff[:n]))
+        if message == "" {
+            continue
+        }
 
-	// Supprimer le client à la déconnexion
-	clientsMu.Lock()
-	for i, c := range clients {
-    if c.Conn == conn { // trouver le client dans la slice
-        clients = append(clients[:i], clients[i+1:]...) // supprimer
-        break
+        now := time.Now().Format("2006-01-02 15:04:05")
+        fullMsg := fmt.Sprintf("[%s][%s]: %s\n", now, name, message)
+
+        // envoyer à tous sauf lui-même
+        broadcast(fullMsg, memberId)
     }
 }
-	clientsMu.Unlock()
-	fmt.Println(name, "a quitté le chat.")
-	broadcast(fmt.Sprintf("%s a quitté le chat...\n", name), conn)
-}
 
-// Fonction pour envoyer un message à tous les clients (sauf éventuellement l'envoyeur)
-func broadcast(message string, ignoreConn net.Conn) {
-    clientsMu.Lock()
-    defer clientsMu.Unlock()
-
-    for _, c := range clients {
-        if c.Conn != ignoreConn {
-            fmt.Fprint(c.Conn, message)
+// broadcast à tous sauf l’expéditeur
+func broadcast(msg string, senderId int) {
+    for _, m := range members {
+        if m.Id != senderId {
+            _, err := m.Conn.Write([]byte(msg))
+            if err != nil {
+                fmt.Println("Error writing to", m.Name, ":", err)
+            }
         }
     }
 }
-
